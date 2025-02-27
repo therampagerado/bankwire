@@ -1,6 +1,6 @@
 {**
- * Copyright (C) 2017-2024 thirty bees
- * Copyright (C) 2007-2016 PrestaShop SA
+ * Copyright (C) 2017-2025 thirty bees
+ * Copyright (C) 2007-2016 Prestashop SA
  *
  * thirty bees is an extension to the PrestaShop software by PrestaShop SA.
  *
@@ -16,10 +16,10 @@
  *
  * @author    thirty bees <modules@thirtybees.com>
  * @author    PrestaShop SA <contact@prestashop.com>
- * @copyright 2017-2024 thirty bees
+ * @copyright 2017-2025 thirty bees
  * @copyright 2007-2016 PrestaShop SA
  * @license   Academic Free License (AFL 3.0)
- * PrestaShop is an internationally registered trademark of PrestaShop SA.
+ * Prestashop is an internationally registered trademark of PrestaShop SA.
  *}
 
 {capture name=path}
@@ -52,32 +52,70 @@
         {l s='(tax incl.)' mod='bankwire'}
       {/if}
     </p>
-    <p>
-      -
-      {if $currencies|@count > 1}
-        {l s='We allow several currencies to be sent via bank wire.' mod='bankwire'}
+
+    {* Ensure only bank accounts for the selected language are displayed *}
+    {if isset($bank_accounts) && $bank_accounts|@count > 0}
+      <p>
+        {l s='Please choose a bank account for the transfer:' mod='bankwire'}
         <br/>
-        <br/>
-        {l s='Choose one of the following:' mod='bankwire'}
-        <select id="currency_payement" name="currency_payement" onchange="setCurrency($('#currency_payement').val());">
-          {foreach from=$currencies item=currency}
-            <option value="{$currency.id_currency}" {if $currency.id_currency == $cust_currency}selected="selected"{/if}>{$currency.name}</option>
+        <select id="bank_account" name="bank_account">
+          {foreach from=$bank_accounts item=account}
+            {if $account.id_lang == $cust_lang && $account.id_shop == $shop_id}
+              <option value="{$account.id_bankwire}">
+                {$account.account_holder|escape:'html'} - {$account.bank_address|escape:'html'}
+              </option>
+            {/if}
           {/foreach}
         </select>
-      {else}
-        {l s='We allow the following currency to be sent via bank wire:' mod='bankwire'}&nbsp;
-        <b>{$currencies[0].name}</b>
-        <input type="hidden" name="currency_payement" value="{$currencies.0.id_currency}"/>
-      {/if}
-    </p>
-    <p>
-      {l s='Bank wire account information will be displayed on the next page.' mod='bankwire'}
-      <br/><br/>
-      <b>{l s='Please confirm your order by clicking "I confirm my order".' mod='bankwire'}</b>
-    </p>
-    <p class="cart_navigation" id="cart_navigation">
-      <input type="submit" value="{l s='I confirm my order' mod='bankwire'}" class="exclusive_large"/>
-      <a href="{$link->getPageLink('order', true, NULL, "step=3")|escape:'html'}" class="button_large">{l s='Other payment methods' mod='bankwire'}</a>
-    </p>
+      </p>
+
+      {* Show bank account details dynamically *}
+      <div id="bank_account_details">
+        {foreach from=$bank_accounts item=account}
+          {if $account.id_lang == $cust_lang && $account.id_shop == $shop_id}
+            <p>
+              <strong>{l s='Account Holder' mod='bankwire'}:</strong> <span id="account_holder">{$account.account_holder|escape:'html'}</span><br/>
+              <strong>{l s='Bank Address' mod='bankwire'}:</strong> <span id="bank_address">{$account.bank_address|escape:'html'}</span><br/>
+              <strong>{l s='Account Details' mod='bankwire'}:</strong> <span id="account_details">{$account.account_details|escape:'html'}</span><br/>
+            </p>
+            {break}
+          {/if}
+        {/foreach}
+      </div>
+
+      {* JavaScript to update bank details dynamically when selecting an account *}
+      <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var select = document.getElementById("bank_account");
+            select.addEventListener("change", function() {
+                var selectedId = this.value;
+                var accounts = {$bank_accounts|json_encode nofilter};
+
+                accounts.forEach(function(account) {
+                    if (account.id_bankwire == selectedId && account.id_lang == {$cust_lang}) {
+                        document.getElementById("account_holder").textContent = account.account_holder;
+                        document.getElementById("bank_address").textContent = account.bank_address;
+                        document.getElementById("account_details").textContent = account.account_details;
+                    }
+                });
+            });
+        });
+      </script>
+    {else}
+      <p class="warning">{l s='No bank account is available for the selected currency and language. Please choose another payment method.' mod='bankwire'}</p>
+    {/if}
+
+    {if isset($bank_accounts) && $bank_accounts|@count > 0}
+      <p>
+        {l s='Bank wire account information will be displayed on the next page.' mod='bankwire'}
+        <br/><br/>
+        <b>{l s='Please confirm your order by clicking "I confirm my order".' mod='bankwire'}</b>
+      </p>
+
+      <p class="cart_navigation" id="cart_navigation">
+        <input type="submit" value="{l s='I confirm my order' mod='bankwire'}" class="exclusive_large"/>
+        <a href="{$link->getPageLink('order', true, NULL, "step=3")|escape:'html'}" class="button_large">{l s='Other payment methods' mod='bankwire'}</a>
+      </p>
+    {/if}
   </form>
 {/if}
