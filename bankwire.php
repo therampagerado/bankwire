@@ -27,24 +27,16 @@ if (!defined('_TB_VERSION_')) {
     exit;
 }
 
+require_once __DIR__.'/classes/BankwireAccount.php';
+
 /**
  * Class BankWire
  */
 class BankWire extends PaymentModule
 {
     // @codingStandardsIgnoreStart
-    /** @var string $details */
-    public $details;
-    /** @var string $owner */
-    public $owner;
-    /** @var string $address */
-    public $address;
-    /** @var array $extra_mail_vars */
-    public $extra_mail_vars;
     /** @var string $moduleHtml */
     protected $moduleHtml = '';
-    /** @var array $postErrors */
-    protected $postErrors = [];
     // @codingStandarsdIgnoreEnd
 
     /**
@@ -56,7 +48,7 @@ class BankWire extends PaymentModule
     {
         $this->name = 'bankwire';
         $this->tab = 'payments_gateways';
-        $this->version = '2.0.11';
+        $this->version = '2.1.0';
         $this->author = 'thirty bees';
         $this->need_instance = 1;
         $this->controllers = ['payment', 'validation'];
@@ -64,17 +56,6 @@ class BankWire extends PaymentModule
 
         $this->currencies = true;
         $this->currencies_mode = 'checkbox';
-
-        $config = Configuration::getMultiple(['BANK_WIRE_DETAILS', 'BANK_WIRE_OWNER', 'BANK_WIRE_ADDRESS']);
-        if (!empty($config['BANK_WIRE_OWNER'])) {
-            $this->owner = $config['BANK_WIRE_OWNER'];
-        }
-        if (!empty($config['BANK_WIRE_DETAILS'])) {
-            $this->details = $config['BANK_WIRE_DETAILS'];
-        }
-        if (!empty($config['BANK_WIRE_ADDRESS'])) {
-            $this->address = $config['BANK_WIRE_ADDRESS'];
-        }
 
         $this->bootstrap = true;
         parent::__construct();
@@ -85,22 +66,9 @@ class BankWire extends PaymentModule
         $this->tb_min_version = '1.0.0';
         $this->confirmUninstall = $this->l('Are you sure about removing these details?');
 
-        if (!isset($this->owner) || !isset($this->details) || !isset($this->address)) {
-            $this->warning = $this->l('Account owner and account details must be configured before using this module.');
+        if (!count(BankwireAccount::getCurrenciesByShop($this->context->shop->id))) {
+            $this->warning = $this->l('No bank account has been defined for this shop.');
         }
-        $paymentCurrencies = Currency::checkPaymentCurrencies($this->id);
-        if (!is_array($paymentCurrencies) || !count($paymentCurrencies)) {
-            $this->warning = $this->l('No currency has been set for this module.');
-        }
-
-        $details = Configuration::get('BANK_WIRE_DETAILS');
-        $address = Configuration::get('BANK_WIRE_ADDRESS');
-
-        $this->extra_mail_vars = [
-            '{bankwire_owner}'   => Configuration::get('BANK_WIRE_OWNER'),
-            '{bankwire_details}' => $details ? nl2br($details) : '',
-            '{bankwire_address}' => $address ? nl2br($address) : '',
-        ];
     }
 
     /**
@@ -109,7 +77,7 @@ class BankWire extends PaymentModule
      */
     public function install()
     {
-        if (!parent::install()) {
+        if (!parent::install() || !$this->installDb()) {
             return false;
         }
 
@@ -127,12 +95,66 @@ class BankWire extends PaymentModule
      */
     public function uninstall()
     {
-        if (!Configuration::deleteByName('BANK_WIRE_DETAILS')
-            || !Configuration::deleteByName('BANK_WIRE_OWNER')
-            || !Configuration::deleteByName('BANK_WIRE_ADDRESS')
-            || !parent::uninstall()
-        ) {
+        if (!parent::uninstall() || !$this->uninstallDb()) {
             return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Install database tables
+     *
+     * @return bool
+     * @throws PrestaShopException
+     */
+    protected function installDb()
+    {
+        $sql = [];
+        $sql[] = 'CREATE TABLE IF NOT EXISTS `'._DB_PREFIX_.'bankwire_account` (
+            `id_bankwire_account` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            `id_currency` INT UNSIGNED NOT NULL,
+            PRIMARY KEY (`id_bankwire_account`)
+        ) ENGINE='._MYSQL_ENGINE_.' DEFAULT CHARSET=utf8;';
+        $sql[] = 'CREATE TABLE IF NOT EXISTS `'._DB_PREFIX_.'bankwire_account_lang` (
+            `id_bankwire_account` INT UNSIGNED NOT NULL,
+            `id_lang` INT UNSIGNED NOT NULL,
+            `owner` VARCHAR(255) NOT NULL,
+            `details` TEXT NOT NULL,
+            `address` TEXT NOT NULL,
+            PRIMARY KEY (`id_bankwire_account`,`id_lang`)
+        ) ENGINE='._MYSQL_ENGINE_.' DEFAULT CHARSET=utf8;';
+        $sql[] = 'CREATE TABLE IF NOT EXISTS `'._DB_PREFIX_.'bankwire_account_shop` (
+            `id_bankwire_account` INT UNSIGNED NOT NULL,
+            `id_shop` INT UNSIGNED NOT NULL,
+            PRIMARY KEY (`id_bankwire_account`,`id_shop`)
+        ) ENGINE='._MYSQL_ENGINE_.' DEFAULT CHARSET=utf8;';
+
+        foreach ($sql as $s) {
+            if (!Db::getInstance()->execute($s)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Remove database tables
+     *
+     * @return bool
+     * @throws PrestaShopException
+     */
+    protected function uninstallDb()
+    {
+        $sql = [];
+        $sql[] = 'DROP TABLE IF EXISTS `'._DB_PREFIX_.'bankwire_account_shop`';
+        $sql[] = 'DROP TABLE IF EXISTS `'._DB_PREFIX_.'bankwire_account_lang`';
+        $sql[] = 'DROP TABLE IF EXISTS `'._DB_PREFIX_.'bankwire_account`';
+        foreach ($sql as $s) {
+            if (!Db::getInstance()->execute($s)) {
+                return false;
+            }
         }
 
         return true;
@@ -147,21 +169,22 @@ class BankWire extends PaymentModule
      */
     public function getContent()
     {
-        if (Tools::isSubmit('btnSubmit')) {
-            $this->postValidation();
-            if (!is_array($this->postErrors) || !count($this->postErrors)) {
-                $this->postProcess();
-            } else {
-                foreach ($this->postErrors as $err) {
-                    $this->moduleHtml .= $this->displayError($err);
-                }
-            }
-        } else {
-            $this->moduleHtml .= '<br />';
+        $this->moduleHtml .= $this->displayBankwire();
+
+        if (Tools::isSubmit('submitBankwireAccount')) {
+            $this->processAccount();
         }
 
-        $this->moduleHtml .= $this->displayBankwire();
-        $this->moduleHtml .= $this->renderForm();
+        if (Tools::isSubmit('deletebankwire_account')) {
+            $account = new BankwireAccount((int) Tools::getValue('id_bankwire_account'));
+            $account->delete();
+        }
+
+        if (Tools::isSubmit('addbankwire_account') || Tools::isSubmit('updatebankwire_account')) {
+            $this->moduleHtml .= $this->renderAccountForm();
+        } else {
+            $this->moduleHtml .= $this->renderAccountList();
+        }
 
         return $this->moduleHtml;
     }
@@ -178,79 +201,184 @@ class BankWire extends PaymentModule
     }
 
     /**
+     * Render list of accounts
+     *
      * @return string
-     * @throws Exception
-     * @throws PrestaShopDatabaseException
      * @throws PrestaShopException
-     * @throws SmartyException
      */
-    public function renderForm()
+    protected function renderAccountList()
     {
-        $formFields = [
+        $idLang = (int) $this->context->language->id;
+        $shops = Shop::getContextListShopID();
+        $shopIds = implode(',', array_map('intval', $shops));
+        $accounts = Db::getInstance()->executeS('SELECT a.id_bankwire_account, c.iso_code AS currency, al.owner
+            FROM '._DB_PREFIX_.'bankwire_account a
+            INNER JOIN '._DB_PREFIX_.'bankwire_account_shop s ON (a.id_bankwire_account = s.id_bankwire_account AND s.id_shop IN ('.$shopIds.'))
+            INNER JOIN '._DB_PREFIX_.'currency c ON (c.id_currency = a.id_currency)
+            INNER JOIN '._DB_PREFIX_.'bankwire_account_lang al ON (a.id_bankwire_account = al.id_bankwire_account AND al.id_lang = '.$idLang.')
+            GROUP BY a.id_bankwire_account');
+
+        $fields_list = [
+            'id_bankwire_account' => ['title' => $this->l('ID'), 'align' => 'center'],
+            'currency'           => ['title' => $this->l('Currency')],
+            'owner'              => ['title' => $this->l('Account owner')],
+        ];
+
+        $helper = new HelperList();
+        $helper->shopLinkType = '';
+        $helper->simple_header = true;
+        $helper->identifier = 'id_bankwire_account';
+        $helper->actions = ['edit', 'delete'];
+        $helper->title = $this->l('Bank accounts');
+        $helper->table = 'bankwire_account';
+        $helper->no_link = true;
+        $helper->currentIndex = $this->context->link->getAdminLink('AdminModules', false).'&configure='.$this->name.'&tab_module='.$this->tab.'&module_name='.$this->name;
+        $helper->token = Tools::getAdminTokenLite('AdminModules');
+        $helper->toolbar_btn['new'] = [
+            'href' => $helper->currentIndex.'&addbankwire_account',
+            'desc' => $this->l('Add new account'),
+        ];
+
+        return $helper->generateList($accounts, $fields_list);
+    }
+
+    /**
+     * Render account form
+     *
+     * @return string
+     * @throws PrestaShopException
+     */
+    protected function renderAccountForm()
+    {
+        $id = (int) Tools::getValue('id_bankwire_account');
+        $account = new BankwireAccount($id);
+
+        $currencies = Currency::getCurrencies(false, true, true);
+
+        $form = [
             'form' => [
                 'legend' => [
-                    'title' => $this->l('Contact details'),
+                    'title' => $this->l('Bank account'),
                     'icon'  => 'icon-envelope',
                 ],
                 'input'  => [
                     [
+                        'type'    => 'select',
+                        'label'   => $this->l('Currency'),
+                        'name'    => 'id_currency',
+                        'options' => [
+                            'query' => $currencies,
+                            'id'    => 'id_currency',
+                            'name'  => 'name',
+                        ],
+                        'required' => true,
+                    ],
+                    [
                         'type'     => 'text',
                         'label'    => $this->l('Account owner'),
-                        'name'     => 'BANK_WIRE_OWNER',
+                        'name'     => 'owner',
+                        'lang'     => true,
                         'required' => true,
                     ],
                     [
                         'type'     => 'textarea',
                         'label'    => $this->l('Details'),
-                        'name'     => 'BANK_WIRE_DETAILS',
-                        'desc'     => $this->l('Such as bank branch, IBAN number, BIC, etc.'),
+                        'name'     => 'details',
+                        'lang'     => true,
                         'required' => true,
                     ],
                     [
                         'type'     => 'textarea',
                         'label'    => $this->l('Bank address'),
-                        'name'     => 'BANK_WIRE_ADDRESS',
+                        'name'     => 'address',
+                        'lang'     => true,
                         'required' => true,
                     ],
+                    [
+                        'type' => 'shop',
+                        'label' => $this->l('Shop association'),
+                        'name'  => 'checkBoxShopAsso_bankwire_account',
+                    ],
                 ],
-                'submit' => [
-                    'title' => $this->l('Save'),
-                ],
+                'submit' => ['title' => $this->l('Save')],
             ],
         ];
 
         $helper = new HelperForm();
         $helper->show_toolbar = false;
-        $helper->table = $this->table;
-        $lang = new Language((int) Configuration::get('PS_LANG_DEFAULT'));
-        $helper->default_form_language = $lang->id;
-        $helper->allow_employee_form_lang = Configuration::get('PS_BO_ALLOW_EMPLOYEE_FORM_LANG') ? Configuration::get('PS_BO_ALLOW_EMPLOYEE_FORM_LANG') : 0;
-        $helper->identifier = $this->identifier;
-        $helper->submit_action = 'btnSubmit';
+        $helper->table = 'bankwire_account';
+        $helper->identifier = 'id_bankwire_account';
         $helper->currentIndex = $this->context->link->getAdminLink('AdminModules', false).'&configure='.$this->name.'&tab_module='.$this->tab.'&module_name='.$this->name;
         $helper->token = Tools::getAdminTokenLite('AdminModules');
+        $helper->submit_action = 'submitBankwireAccount';
+        $helper->default_form_language = (int) $this->context->language->id;
+
+        $fields_value = [
+            'id_currency' => $account->id_currency,
+        ];
+        $languages = $this->context->controller->getLanguages();
+        foreach ($languages as $lang) {
+            $fields_value['owner'][$lang['id_lang']] = isset($account->owner[$lang['id_lang']]) ? $account->owner[$lang['id_lang']] : '';
+            $fields_value['details'][$lang['id_lang']] = isset($account->details[$lang['id_lang']]) ? $account->details[$lang['id_lang']] : '';
+            $fields_value['address'][$lang['id_lang']] = isset($account->address[$lang['id_lang']]) ? $account->address[$lang['id_lang']] : '';
+        }
+        $shops = $account->id ? $account->getAssociatedShops() : Shop::getContextListShopID();
+        $asso = [];
+        foreach ($shops as $idShop) {
+            if (is_array($idShop)) {
+                $asso[$idShop['id_shop']] = true;
+            } else {
+                $asso[$idShop] = true;
+            }
+        }
+        $fields_value['checkBoxShopAsso_bankwire_account'] = $asso;
+        if ($account->id) {
+            $fields_value['id_bankwire_account'] = $account->id;
+        }
+
         $helper->tpl_vars = [
-            'fields_value' => $this->getConfigFieldsValues(),
-            'languages'    => $this->context->controller->getLanguages(),
+            'fields_value' => $fields_value,
+            'languages'    => $languages,
             'id_language'  => $this->context->language->id,
         ];
 
-        return $helper->generateForm([$formFields]);
+        return $helper->generateForm([$form]);
     }
 
     /**
-     * Get the configuration field values
+     * Process form submission
      *
-     * @return array
      * @throws PrestaShopException
      */
-    public function getConfigFieldsValues()
+    protected function processAccount()
     {
-        return [
-            'BANK_WIRE_DETAILS' => Configuration::get('BANK_WIRE_DETAILS'),
-            'BANK_WIRE_OWNER'   => Configuration::get('BANK_WIRE_OWNER'),
-            'BANK_WIRE_ADDRESS' => Configuration::get('BANK_WIRE_ADDRESS'),
-        ];
+        $id = (int) Tools::getValue('id_bankwire_account');
+        $account = new BankwireAccount($id);
+        $account->id_currency = (int) Tools::getValue('id_currency');
+
+        $languages = Language::getLanguages(false);
+        foreach ($languages as $lang) {
+            $account->owner[$lang['id_lang']] = Tools::getValue('owner_'.$lang['id_lang']);
+            $account->details[$lang['id_lang']] = Tools::getValue('details_'.$lang['id_lang']);
+            $account->address[$lang['id_lang']] = Tools::getValue('address_'.$lang['id_lang']);
+        }
+        $shops = Tools::getValue('checkBoxShopAsso_bankwire_account');
+        $account->id_shop_list = is_array($shops) ? $shops : [$this->context->shop->id];
+
+        foreach ($account->id_shop_list as $idShop) {
+            if (BankwireAccount::existsForCurrency($account->id_currency, $idShop, $id)) {
+                $this->moduleHtml .= $this->displayError($this->l('An account already exists for this currency and shop.'));
+                return;
+            }
+        }
+
+        if ($account->id) {
+            $account->update();
+        } else {
+            $account->add();
+        }
+
+        $this->moduleHtml .= $this->displayConfirmation($this->l('Settings updated'));
     }
 
     /**
@@ -263,6 +391,12 @@ class BankWire extends PaymentModule
     {
         if (!$this->active) {
             return '';
+        }
+
+        $account = BankwireAccount::getByCurrency($this->context->cart->id_currency, $this->context->shop->id, $this->context->language->id);
+        if (!$account) {
+            $this->smarty->assign('bankwireError', $this->l('Bank wire is not available for the selected currency.'));
+            return $this->display(__FILE__, 'payment_error.tpl');
         }
 
         $this->smarty->assign(
@@ -283,6 +417,11 @@ class BankWire extends PaymentModule
     public function hookDisplayPaymentEU()
     {
         if (!$this->active) {
+            return '';
+        }
+
+        $account = BankwireAccount::getByCurrency($this->context->cart->id_currency, $this->context->shop->id, $this->context->language->id);
+        if (!$account) {
             return '';
         }
 
@@ -310,12 +449,13 @@ class BankWire extends PaymentModule
         try {
             $state = $params['objOrder']->getCurrentState();
             if (in_array($state, [Configuration::get('PS_OS_BANKWIRE'), Configuration::get('PS_OS_OUTOFSTOCK'), Configuration::get('PS_OS_OUTOFSTOCK_UNPAID')])) {
+                $account = BankwireAccount::getByCurrency($params['currencyObj']->id, $this->context->shop->id, $this->context->language->id);
                 $this->smarty->assign(
                     [
                         'total_to_pay'    => Tools::displayPrice($params['total_to_pay'], $params['currencyObj'], false),
-                        'bankwireDetails' => $this->details ? nl2br($this->details) : '',
-                        'bankwireAddress' => $this->address ? nl2br($this->address) : '',
-                        'bankwireOwner'   => $this->owner,
+                        'bankwireDetails' => $account ? nl2br($account['details']) : '',
+                        'bankwireAddress' => $account ? nl2br($account['address']) : '',
+                        'bankwireOwner'   => $account ? $account['owner'] : '',
                         'status'          => 'ok',
                         'id_order'        => $params['objOrder']->id,
                     ]
@@ -333,34 +473,5 @@ class BankWire extends PaymentModule
         }
 
         return $this->display(__FILE__, 'payment_return.tpl');
-    }
-
-    /**
-     * Post process
-     *
-     * @throws PrestaShopException
-     */
-    protected function postProcess()
-    {
-        if (Tools::isSubmit('btnSubmit')) {
-            Configuration::updateValue('BANK_WIRE_DETAILS', Tools::getValue('BANK_WIRE_DETAILS'), true);
-            Configuration::updateValue('BANK_WIRE_OWNER', Tools::getValue('BANK_WIRE_OWNER'));
-            Configuration::updateValue('BANK_WIRE_ADDRESS', Tools::getValue('BANK_WIRE_ADDRESS'), true);
-        }
-        $this->moduleHtml .= $this->displayConfirmation($this->l('Settings updated'));
-    }
-
-    /**
-     * Post validation
-     */
-    protected function postValidation()
-    {
-        if (Tools::isSubmit('btnSubmit')) {
-            if (!Tools::getValue('BANK_WIRE_DETAILS')) {
-                $this->postErrors[] = $this->l('Account details are required.');
-            } elseif (!Tools::getValue('BANK_WIRE_OWNER')) {
-                $this->postErrors[] = $this->l('Account owner is required.');
-            }
-        }
     }
 }

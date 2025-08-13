@@ -67,7 +67,17 @@ class BankwireValidationModuleFrontController extends ModuleFrontController
         $currency = $this->context->currency;
         $total = (float) $cart->getOrderTotal(true, Cart::BOTH);
 
-        $this->module->validateOrder($cart->id, Configuration::get('PS_OS_BANKWIRE'), $total, $this->module->displayName, null, [], (int) $currency->id, false, $cart->secure_key);
+        $account = BankwireAccount::getByCurrency($currency->id, $cart->id_shop, $this->context->language->id);
+        if (!$account) {
+            Tools::redirect('index.php?controller=order&step=3');
+        }
+        $extraVars = [
+            '{bankwire_owner}'   => $account['owner'],
+            '{bankwire_details}' => nl2br($account['details']),
+            '{bankwire_address}' => nl2br($account['address']),
+        ];
+
+        $this->module->validateOrder($cart->id, Configuration::get('PS_OS_BANKWIRE'), $total, $this->module->displayName, null, $extraVars, (int) $currency->id, false, $cart->secure_key);
         Tools::redirect('index.php?controller=order-confirmation&id_cart='.$cart->id.'&id_module='.$this->module->id.'&id_order='.$this->module->currentOrder.'&key='.$customer->secure_key);
     }
 }

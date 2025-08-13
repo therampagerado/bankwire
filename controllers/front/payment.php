@@ -53,19 +53,20 @@ class BankwirePaymentModuleFrontController extends ModuleFrontController
 
         $cart = $this->context->cart;
         try {
-            if (!count(Currency::checkPaymentCurrencies($this->module->id))) {
-                Tools::redirect('index.php?controller=order');
+            $currencies = [];
+            foreach (BankwireAccount::getCurrenciesByShop((int) $cart->id_shop) as $row) {
+                $currencies[] = Currency::getCurrencyInstance($row['id_currency']);
             }
-        } catch (PrestaShopException $e) {
-            Tools::redirect('index.php?controller=order');
-        }
 
-        try {
+            if (!BankwireAccount::getByCurrency($cart->id_currency, $cart->id_shop)) {
+                Tools::redirect('index.php?controller=order&step=3');
+            }
+
             $this->context->smarty->assign(
                 [
                     'nbProducts'    => $cart->nbProducts(),
                     'cust_currency' => $cart->id_currency,
-                    'currencies'    => Currency::getPaymentCurrencies($this->module->id, (int) $cart->id_shop),
+                    'currencies'    => $currencies,
                     'total'         => $cart->getOrderTotal(true, Cart::BOTH),
                     'this_path'     => $this->module->getPathUri(),
                     'this_path_bw'  => $this->module->getPathUri(),
