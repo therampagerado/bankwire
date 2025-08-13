@@ -46,36 +46,52 @@ class BankwirePaymentModuleFrontController extends ModuleFrontController
      */
     public function initContent()
     {
-        try {
-            parent::initContent();
-        } catch (PrestaShopException $e) {
-        }
-
+        parent::initContent();
         $cart = $this->context->cart;
-        try {
-            if (!count(Currency::checkPaymentCurrencies($this->module->id))) {
-                Tools::redirect('index.php?controller=order');
+
+        // Require at least a specific account or ALL account
+        if (!BankwireAccount::getByCurrency((int)$cart->id_currency, (int)$cart->id_shop)) {
+            Tools::redirect('index.php?controller=order&step=3');
+        }
+
+        $rows = BankwireAccount::getCurrenciesByShop((int)$cart->id_shop);
+        $hasAll = false;
+        foreach ($rows as $r) {
+            if ((int)$r['id_currency'] === BankwireAccount::CURRENCY_ALL) { $hasAll = true; break; }
+        }
+
+        $currencies = [];
+        if ($hasAll) {
+            // Present only the cart currency to keep the tpl text coherent
+            $c = Currency::getCurrencyInstance((int)$cart->id_currency);
+            $currencies[] = [
+                'id_currency' => (int)$c->id,
+                'name'        => $c->name ?: $c->iso_code,
+            ];
+        } else {
+            // Legacy shape: array of arrays
+            foreach ($rows as $row) {
+                $c = Currency::getCurrencyInstance((int)$row['id_currency']);
+                if (Validate::isLoadedObject($c)) {
+                    $currencies[] = [
+                        'id_currency' => (int)$c->id,
+                        'name'        => $c->name ?: $c->iso_code,
+                    ];
+                }
             }
-        } catch (PrestaShopException $e) {
-            Tools::redirect('index.php?controller=order');
         }
 
-        try {
-            $this->context->smarty->assign(
-                [
-                    'nbProducts'    => $cart->nbProducts(),
-                    'cust_currency' => $cart->id_currency,
-                    'currencies'    => Currency::getPaymentCurrencies($this->module->id, (int) $cart->id_shop),
-                    'total'         => $cart->getOrderTotal(true, Cart::BOTH),
-                    'this_path'     => $this->module->getPathUri(),
-                    'this_path_bw'  => $this->module->getPathUri(),
-                    'this_path_ssl' => Tools::getShopDomainSsl(true, true).__PS_BASE_URI__.'modules/'.$this->module->name.'/',
-                ]
-            );
+        $this->context->smarty->assign([
+            'nbProducts'    => (int)$cart->nbProducts(),
+            'cust_currency' => (int)$cart->id_currency,
+            'currencies'    => $currencies,
+            'total'         => (float)$cart->getOrderTotal(true, Cart::BOTH),
+            'use_taxes'     => (int) Configuration::get('PS_TAX'),
+            'this_path'     => $this->module->getPathUri(),
+            'this_path_bw'  => $this->module->getPathUri(),
+            'this_path_ssl' => Tools::getShopDomainSsl(true, true).__PS_BASE_URI__.'modules/'.$this->module->name.'/',
+        ]);
 
-            $this->setTemplate('payment_execution.tpl');
-        } catch (Exception $e) {
-            Logger::addLog("Bankwire module error: {$e->getMessage()}");
-        }
+        $this->setTemplate('payment_execution.tpl');
     }
 }
